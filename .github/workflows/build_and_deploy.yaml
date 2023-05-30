@@ -1,0 +1,69 @@
+name: Build and deploy container
+on:
+  push:
+    branches: [ "main" ]
+permissions:
+  id-token: write
+  contents: read    
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      # Setup the build environment
+      - uses: actions/checkout@v2
+
+      - uses: actions/setup-go@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@main
+
+      # Build our container
+      - run: docker build --tag=public.ecr.aws/o6u7e2l7/identiverse:${GITHUB_REPOSITORY#*/}-$GITHUB_SHA ./source
+
+      # Login to AWS
+      #- uses: aws-actions/configure-aws-credentials@v1
+      #  with:
+      #    role-to-assume: ${{ secrets.AWS_ROLE }}
+      #    role-session-name: ${{ secrets.SESSION_NAME }}
+      #    aws-region: us-east-1
+
+      # Get docker credentials
+      #- name: Login to Amazon ECR Private
+      #  id: login-ecr
+      #  uses: aws-actions/amazon-ecr-login@v1
+      #  with: 
+      #    registry-type: public
+
+
+      # Push to our registry
+      - run: docker push public.ecr.aws/o6u7e2l7/identiverse:${GITHUB_REPOSITORY#*/}-$GITHUB_SHA
+
+      # Sign our image using the GitHub OIDC Token
+      #- name: Sign image with GitHub OIDC
+      #  run: |-
+      #     cosign sign -y public.ecr.aws/o6u7e2l7/identiverse:${GITHUB_REPOSITORY#*/}-$GITHUB_SHA
+
+      # Check out our application's infrastructure repository
+      - uses: actions/checkout@v3
+        with:
+          repository: identiverse-sigstore-lab/unison-test-user-3-workshop-infrastructure
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          fetch-depth: 0
+
+      # Patch the Deployment with the new image
+      - run: |-
+                    git pull
+                    git config user.name github-actions
+                    git config user.email github-actions@github.com
+
+                    kubectl patch --local -f yaml/deployments/run-service.yaml -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"pause\",\"image\":\"public.ecr.aws/o6u7e2l7/identiverse:${GITHUB_REPOSITORY#*/}-$GITHUB_SHA\"}]}}}}" -o yaml > /tmp/hello-python.yaml
+                    cp /tmp/hello-python.yaml yaml/deployments/run-service.yaml
+                    git add yaml/deployments/run-service.yaml
+                    git commit -m "commit automated build from commit $GITHUB_SHA"
+                    git push
